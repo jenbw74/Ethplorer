@@ -15,6 +15,10 @@
  * limitations under the License.
  */
 
+require_once __DIR__ . '/../../vendor/autoload.php';
+
+require_once __DIR__ . '/redis_wrap.php';
+
 /**
  * Cache class.
  */
@@ -30,6 +34,11 @@ class evxCache {
     const MONTH = 2592000; // 30 * 24 * 3600
 
     /**
+     * Seconds in 1 day
+     */
+    const DAY = 43200; // 1 * 24 * 3600
+
+    /**
      * Cache locks ttl in seconds
      */
     const LOCK_TTL = 120;
@@ -43,6 +52,11 @@ class evxCache {
      * Repeats number for checking cache data
      */
     const LOCK_WAITING_REPEATS = 20;
+
+    /**
+     * Lifetime key value for keys without associated expire time
+     */
+    const NON_EXPIRATION_LIFETIME = -1;
 
     /**
      * Cache storage.
@@ -81,6 +95,8 @@ class evxCache {
 
     protected $useLocks = FALSE;
 
+    protected $prefixGetter;
+
     /**
      * Constructor.
      *
@@ -96,9 +112,9 @@ class evxCache {
         if(FALSE !== $driver){
             $this->driver = $driver;
         }
-        $this->useLocks = $useLocks;
 
-        //if(class_exists('Redis') && (php_sapi_name() === 'cli') && isset($aConfig['redis'])) $this->driver = 'redis';
+        $this->useLocks = $useLocks;
+        if(isset($aConfig['cliCacheDriver']) && (php_sapi_name() === 'cli')) $this->driver = $aConfig['cliCacheDriver'];
 
         if('memcached' === $this->driver){
             if(class_exists('Memcached')){
@@ -114,12 +130,11 @@ class evxCache {
                 $this->driver = 'file';
             }
         }else if('redis' === $this->driver){
-            if(class_exists('Redis')){
-                $rc = new Redis();
-                $rc->connect($aConfig['redis']['server'], $aConfig['redis']['port']);
-                $this->oDriver = $rc;
-            }else{
-                die('Redis class not found');
+            try{
+                $rc = new Predis\Client($aConfig['redis']['servers'], $aConfig['redis']['options']);
+                $this->oDriver = new RedisWrap($rc);
+            }catch(\Exception $e){
+                die($e->getMessage());
             }
         }
     }
@@ -139,12 +154,35 @@ class evxCache {
     }
 
     /**
+     * Clean cache by key
+     * @param String $entryName
+     */
+    public function delete($entryName) {
+        switch ($this->driver) {
+            case 'redis':
+                $this->oDriver->del($entryName);
+                break;
+
+            case 'memcached':
+                $this->oDriver->delete($entryName);
+                break;
+
+            case 'file':
+                @unlink($this->path . '/' . $entryName . '.tmp');
+                break;
+
+            default:
+                throw \Exception('The method for delete of cache driver not implemented');
+        }
+    }
+
+    /**
      * Saves data to file.
      *
      * @param string  $entryName  Cache entry name
      * @param mixed   $data       Data to store
      */
-    public function save($entryName, $data){
+    public function save($entryName, $data, $nonExpiration = FALSE){
         $saveRes = false;
         $this->store($entryName, $data);
         switch($this->driver){
@@ -154,15 +192,31 @@ class evxCache {
                 /*if($lifetime > evxCache::MONTH){
                     $lifetime = time() + $cacheLifetime;
                 }*/
-                if(!$lifetime){
-                    // 365 days if cache lifetime is not set
-                    $lifetime = time() + 12 * evxCache::MONTH + 5 * 24 * evxCache::HOUR;
+                $ttl = evxCache::DAY;
+                if($nonExpiration){
+                    $lifetime = evxCache::NON_EXPIRATION_LIFETIME;
+                }else if(!$lifetime){
+                    // 1 day if cache lifetime is not set
+                    $lifetime = time() + evxCache::DAY;
                 }else{
+                    $ttl = $lifetime;
                     $lifetime = time() + $lifetime;
                 }
-                //$saveRes = $this->oDriver->set($entryName, $data, $lifetime);
                 $aCachedData = array('lifetime' => $lifetime, 'data' => $data, 'lock' => true);
-                $saveRes = $this->oDriver->set($entryName, ('redis' == $this->driver) ? json_encode($aCachedData) : $aCachedData);
+                if('redis' == $this->driver){
+                    $saveOptions = JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR;
+                    if($nonExpiration){
+                        $saveRes = $this->oDriver->set($entryName, json_encode($aCachedData, $saveOptions));
+                    }else{
+                        $saveRes = $this->oDriver->set($entryName, json_encode($aCachedData, $saveOptions), 'ex', $ttl);
+                    }
+                    if('OK' !== (string)$saveRes){
+                        error_log("Write data to redis failed: " . $saveRes . " Data: " . json_encode($aCachedData) . " TTL: " . $ttl);
+                    }
+                    $this->oDriver->getConnection()->switchToSlave();
+                }else{
+                    $saveRes = $this->oDriver->set($entryName, $aCachedData);
+                }
                 if(('redis' == $this->driver) || (!in_array($entryName, array('tokens', 'rates')) && (0 !== strpos($entryName, 'rates-history-')))){
                     break;
                 }
@@ -214,7 +268,7 @@ class evxCache {
         if('memcached' === $this->driver){
             return $this->oDriver->add($entryName . '-lock', TRUE, evxCache::LOCK_TTL);
         }else if('redis' === $this->driver){
-            return $this->oDriver->set($entryName . '-lock', 'true', array('nx', 'ex' => evxCache::LOCK_TTL));
+            return $this->oDriver->set($entryName . '-lock', 'true', 'nx', 'ex', evxCache::LOCK_TTL);
         }else{
             $lockFilename = $this->path . '/' . $entryName . "-lock.tmp";
 
@@ -233,7 +287,9 @@ class evxCache {
      * @return boolean
      */
     public function deleteLock($entryName){
-        if('memcached' === $this->driver || 'redis' === $this->driver){
+        if('redis' === $this->driver){
+            return $this->oDriver->del($entryName . '-lock');
+        }elseif('memcached' === $this->driver){
             return $this->oDriver->delete($entryName . '-lock');
         }else{
             return @unlink($this->path . '/' . $entryName . '-lock.tmp');
@@ -255,7 +311,7 @@ class evxCache {
             $memcachedData = ('redis' == $this->driver) ? json_decode($this->oDriver->get($entryName), TRUE) : $this->oDriver->get($entryName);
             if($memcachedData && isset($memcachedData['lifetime']) && isset($memcachedData['data'])){
                 $result['data'] = $memcachedData['data'];
-                if($memcachedData['lifetime'] < time()){
+                if($memcachedData['lifetime'] > 0 && $memcachedData['lifetime'] < time()){
                     $result['expired'] = TRUE;
                 }
             }
@@ -309,6 +365,7 @@ class evxCache {
             $result = $aCachedData['data'];
             $isExpired = $aCachedData['expired'];
         }else{
+
             return $result;
         }
 

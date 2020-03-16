@@ -393,13 +393,13 @@ eWgs.push(function () {
             '#token-history-grouped-2', // Placeholder element
             'tokenHistoryGrouped', // Widget type
             {
-                'period': 10,
+                'period': 90,
                 'type': 'column', // supported types: area, column, line
                 options: {
                     'title': 'Ethereum Tokens Pulse',
                     'pointSize': 2,
                     'hAxis': {
-                        'title': '10 days token operations chart',
+                        'title': '90 days token operations chart',
                         'titleTextStyle': {
                             'color': '#3366CC',
                             'italic': true
@@ -444,9 +444,10 @@ eWgs.push(function () {
             '#token-history-grouped-3', // Placeholder element
             'tokenHistoryGrouped', // Widget type
             {
+                'period': 90,
                 'theme': 'dark',
                 options: {
-
+                    'pointSize': 1,
                     'title': 'Ethereum Tokens Pulse',
                     'hAxis': {
                         'title': '90 days token operations chart',
@@ -650,7 +651,7 @@ eWgs.push(function () {
                                 <li><a href="https://ethplorer.io/#contact">Contact</a></li>
                                 <li><a href="https://ethplorer.io/#subscribe">Subscribe</a></li>
                                 <li><a href="https://www.reddit.com/r/ethplorer/">Discuss at Reddit</a></li>
-                                <li><a href="https://docs.google.com/forms/d/e/1FAIpQLSemDE0-vqUnJ7ToRdt1qR95iTbaMfq0FRXt7INMMJrm1IO4dQ/viewform?c=0&w=1">Update your Token info</a></li>
+                                <li><a href="http://bit.ly/ethp-contact">Update your Token info</a></li>
                             </ul>
                         </div>
                         <div class="col-xs-7 col-sm-5 col-md-4 footer-donation">

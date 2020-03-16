@@ -73,13 +73,15 @@ class evxMongo {
     
     protected $isConnected = false;
 
+    protected $useOperations2 = FALSE;
+
     /**
      * Constructor.
      *
      * @param array $aSettings
      * @throws \Exception
      */
-    protected function __construct(array $aSettings){
+    protected function __construct(array $aSettings, $useOperations2 = FALSE){
         
         $this->logFile = __DIR__ . '/../log/mongo-profile.log';
         // Default config
@@ -91,6 +93,7 @@ class evxMongo {
         );
 
         $this->aSettings = $aSettings;
+        $this->useOperations2 = $useOperations2;
         $this->dbName = $aSettings['dbName'];
         $this->driver = $aSettings['driver'];
     }
@@ -145,7 +148,7 @@ class evxMongo {
                 if(is_array($sort)){
                     $cursor = $cursor->sort($sort);
                 }
-                if(false !== $skip){
+                if(false !== $skip && $skip > 0){
                     $cursor = $cursor->skip($skip);
                 }
                 if(false !== $limit){
@@ -161,7 +164,7 @@ class evxMongo {
                 if(is_array($sort)){
                     $aOptions['sort'] = $sort;
                 }
-                if(false !== $skip){
+                if(false !== $skip && $skip > 0){
                     $aOptions['skip'] = $skip;
                 }
                 if(false !== $limit){
@@ -228,7 +231,20 @@ class evxMongo {
             case 'mongodb':
                 $query = new MongoDB\Driver\Query($aSearch, $aOptions);
                 $cursor = $this->oMongo->executeQuery($this->dbName . '.' . $this->aDBs[$collection], $query);
-                $result = iterator_count($cursor);
+                try {
+                    $result = iterator_count($cursor);
+                }catch(\Exception $e){
+                    if(class_exists("Ethplorer")){
+                        Ethplorer::db()->reportException($e, array(
+                            'extra' => array(
+                                'query' => 'count',
+                                'search' => $aSearch,
+                                'options' => $aOptions
+                            )
+                        ));
+                    }
+                    $result = FALSE;
+                }
                 /*
                 $command = new MongoDB\Driver\Command(array("count" => $this->aDBs[$collection], "query" => $aSearch));
                 $count = $this->oMongo->executeCommand($this->dbName, $command);
@@ -288,7 +304,7 @@ class evxMongo {
                     'cursor' => new stdClass,
                 ));
                 $cursor = $this->oMongo->executeCommand($this->dbName, $command);
-                if(count($cursor) > 0){
+                if(@count($cursor) > 0){
                     $aResult['result'] = array();
                     $cursor = new IteratorIterator($cursor);
                     foreach($cursor as $record){
